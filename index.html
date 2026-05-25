@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tap Dungeon</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: #0a0a0f;
+    color: #ddd;
+    font-family: monospace;
+    height: 100%;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #ui {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.7);
+    font-size: 14px;
+    z-index: 10;
+    pointer-events: none;
+  }
+  #ui span { color: #aaa; }
+  #ui b { color: #fff; }
+  #hp-bar-wrap {
+    width: 100px; height: 10px;
+    background: #333; border-radius: 5px; overflow: hidden;
+  }
+  #hp-bar { height: 100%; background: #c0392b; transition: width 0.2s; }
+  canvas { display: block; }
+  #overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px; z-index: 20;
+  }
+  #overlay h1 { font-size: 2rem; color: #e74c3c; letter-spacing: 2px; }
+  #overlay p { color: #aaa; font-size: 0.9rem; text-align: center; max-width: 280px; }
+  #overlay button {
+    padding: 14px 36px;
+    background: #2c3e50; border: 2px solid #3498db;
+    color: #fff; font-size: 1rem; font-family: monospace;
+    border-radius: 8px; cursor: pointer;
+    touch-action: manipulation;
+  }
+  #overlay button:active { background: #3498db; }
+  #msg {
+    position: fixed; bottom: 60px; left: 0; right: 0;
+    text-align: center; font-size: 13px; color: #f39c12;
+    pointer-events: none; z-index: 10;
+    transition: opacity 0.5s;
+  }
+  #stairs-btn {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: none;
+    background: #27ae60; color: #fff;
+    border: none; padding: 16px;
+    font-size: 1rem; font-family: monospace;
+    cursor: pointer; z-index: 10;
+    touch-action: manipulation;
+  }
+  #stairs-btn:active { background: #219a52; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div>
+    <span>HP </span>
+    <div id="hp-bar-wrap"><div id="hp-bar" style="width:100%"></div></div>
+  </div>
+  <div><span>Floor </span><b id="floor-num">1</b></div>
+  <div><span>Gold </span><b id="gold-num">0</b></div>
+</div>
+<canvas id="c"></canvas>
+<div id="msg"></div>
+<button id="stairs-btn">Descend ▼</button>
+<div id="overlay">
+  <h1>TAP DUNGEON</h1>
+  <p>Tap to move & attack.<br>Reach the stairs (>) to go deeper.<br>Don't die.</p>
+  <button id="start-btn">ENTER DUNGEON</button>
+</div>
+
+<script>
+// ─── Constants ───────────────────────────────────────────────────────────────
+const TILE = 40;          // px per tile
+const MAP_W = 40, MAP_H = 40;  // tiles
+const ROOM_MIN = 4, ROOM_MAX = 10, ROOM_TRIES = 30;
+
+const T = { WALL: 0, FLOOR: 1, STAIRS: 2 };
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let state = {};
+
+// ─── Canvas setup ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', () => { resizeCanvas(); render(); });
+resizeCanvas();
+
+// ─── Dungeon generation ──────────────────────────────────────────────────────
+function makeMap() {
+  const map = Array.from({ length: MAP_H }, () => new Uint8Array(MAP_W));
+  const rooms = [];
+
+  function carveRoom(rx, ry, rw, rh) {
+    for (let y = ry; y < ry + rh; y++)
+      for (let x = rx; x < rx + rw; x++)
+        map[y][x] = T.FLOOR;
+  }
+
+  function carveTunnel(x1, y1, x2, y2) {
+    let cx = x1, cy = y1;
+    const hFirst = Math.random() < 0.5;
+    if (hFirst) {
+      while (cx !== x2) { map[cy][cx] = T.FLOOR; cx += cx < x2 ? 1 : -1; }
+      while (cy !== y2) { map[cy][cx] = T.FLOOR; cy += cy < y2 ? 1 : -1; }
+    } else {
+      while (cy !== y2) { map[cy][cx] = T.FLOOR; cy += cy < y2 ? 1 : -1; }
+      while (cx !== x2) { map[cy][cx] = T.FLOOR; cx += cx < x2 ? 1 : -1; }
+    }
+    map[y2][x2] = T.FLOOR;
+  }
+
+  for (let i = 0; i < ROOM_TRIES; i++) {
+    const w = ROOM_MIN + Math.floor(Math.random() * (ROOM_MAX - ROOM_MIN));
+    const h = ROOM_MIN + Math.floor(Math.random() * (ROOM_MAX - ROOM_MIN));
+    const x = 1 + Math.floor(Math.random() * (MAP_W - w - 2));
+    const y = 1 + Math.floor(Math.random() * (MAP_H - h - 2));
+    const overlap = rooms.some(r =>
+      x < r.x + r.w + 1 && x + w + 1 > r.x &&
+      y < r.y + r.h + 1 && y + h + 1 > r.y
+    );
+    if (overlap) continue;
+    carveRoom(x, y, w, h);
+    if (rooms.length > 0) {
+      const prev = rooms[rooms.length - 1];
+      carveTunnel(
+        prev.cx, prev.cy,
+        Math.floor(x + w / 2), Math.floor(y + h / 2)
+      );
+    }
+    rooms.push({ x, y, w, h, cx: Math.floor(x + w / 2), cy: Math.floor(y + h / 2) });
+  }
+
+  // Place stairs in last room
+  const last = rooms[rooms.length - 1];
+  map[last.cy][last.cx] = T.STAIRS;
+
+  return { map, rooms };
+}
+
+// ─── FOW ─────────────────────────────────────────────────────────────────────
+function makeFow() {
+  return Array.from({ length: MAP_H }, () => new Uint8Array(MAP_W)); // 0=unseen,1=seen,2=visible
+}
+
+function computeVision(fow, map, px, py, radius = 7) {
+  // Reset currently visible
+  for (let y = 0; y < MAP_H; y++)
+    for (let x = 0; x < MAP_W; x++)
+      if (fow[y][x] === 2) fow[y][x] = 1;
+
+  // Cast rays
+  for (let angle = 0; angle < 360; angle += 2) {
+    const rad = (angle * Math.PI) / 180;
+    let rx = px + 0.5, ry = py + 0.5;
+    const dx = Math.cos(rad) * 0.5, dy = Math.sin(rad) * 0.5;
+    for (let step = 0; step < radius * 2; step++) {
+      const tx = Math.floor(rx), ty = Math.floor(ry);
+      if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) break;
+      fow[ty][tx] = 2;
+      if (map[ty][tx] === T.WALL) break;
+      rx += dx; ry += dy;
+    }
+  }
+}
+
+// ─── Enemies ─────────────────────────────────────────────────────────────────
+const ENEMY_TYPES = [
+  { name: 'Rat',    glyph: 'r', color: '#a0522d', hp: 3,  atk: 1, xp: 1 },
+  { name: 'Goblin', glyph: 'g', color: '#3a9e3a', hp: 6,  atk: 2, xp: 3 },
+  { name: 'Orc',    glyph: 'O', color: '#1a6b1a', hp: 12, atk: 3, xp: 6 },
+  { name: 'Troll',  glyph: 'T', color: '#5b4fcf', hp: 20, atk: 5, xp: 12 },
+];
+
+function spawnEnemies(rooms, floor) {
+  const enemies = [];
+  const count = 2 + floor * 2;
+  const pool = ENEMY_TYPES.slice(0, Math.min(1 + Math.floor(floor / 2), ENEMY_TYPES.length));
+  for (let i = 0; i < count; i++) {
+    const room = rooms[1 + Math.floor(Math.random() * (rooms.length - 1))];
+    const type = pool[Math.floor(Math.random() * pool.length)];
+    const ex = room.x + 1 + Math.floor(Math.random() * (room.w - 2));
+    const ey = room.y + 1 + Math.floor(Math.random() * (room.h - 2));
+    enemies.push({ ...type, x: ex, y: ey, maxHp: type.hp, hp: type.hp });
+  }
+  return enemies;
+}
+
+// ─── Gold items ──────────────────────────────────────────────────────────────
+function spawnGold(rooms, floor) {
+  const items = [];
+  const count = 3 + floor;
+  for (let i = 0; i < count; i++) {
+    const room = rooms[Math.floor(Math.random() * rooms.length)];
+    const gx = room.x + 1 + Math.floor(Math.random() * (room.w - 2));
+    const gy = room.y + 1 + Math.floor(Math.random() * (room.h - 2));
+    items.push({ x: gx, y: gy, val: 1 + Math.floor(Math.random() * (3 + floor)) });
+  }
+  return items;
+}
+
+// ─── Game init ───────────────────────────────────────────────────────────────
+function newGame() {
+  const { map, rooms } = makeMap();
+  const start = rooms[0];
+  state = {
+    map,
+    rooms,
+    fow: makeFow(),
+    floor: 1,
+    player: {
+      x: start.cx, y: start.cy,
+      hp: 20, maxHp: 20, atk: 3,
+      gold: 0, xp: 0, level: 1,
+    },
+    enemies: spawnEnemies(rooms, 1),
+    gold: spawnGold(rooms, 1),
+    alive: true,
+    onStairs: false,
+  };
+  computeVision(state.fow, state.map, state.player.x, state.player.y);
+  updateUI();
+  showMsg('');
+  document.getElementById('stairs-btn').style.display = 'none';
+  render();
+}
+
+function nextFloor() {
+  state.floor++;
+  const { map, rooms } = makeMap();
+  const start = rooms[0];
+  state.map = map;
+  state.rooms = rooms;
+  state.fow = makeFow();
+  state.enemies = spawnEnemies(rooms, state.floor);
+  state.gold = spawnGold(rooms, state.floor);
+  state.player.x = start.cx;
+  state.player.y = start.cy;
+  // Small heal on descent
+  state.player.hp = Math.min(state.player.maxHp, state.player.hp + 5);
+  state.onStairs = false;
+  computeVision(state.fow, state.map, state.player.x, state.player.y);
+  updateUI();
+  document.getElementById('stairs-btn').style.display = 'none';
+  showMsg(`Floor ${state.floor} — deeper into the dark...`);
+  render();
+}
+
+// ─── UI helpers ──────────────────────────────────────────────────────────────
+function updateUI() {
+  const p = state.player;
+  document.getElementById('hp-bar').style.width = `${(p.hp / p.maxHp) * 100}%`;
+  document.getElementById('floor-num').textContent = state.floor;
+  document.getElementById('gold-num').textContent = p.gold;
+}
+
+let msgTimer = null;
+function showMsg(text) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.style.opacity = 1;
+  if (msgTimer) clearTimeout(msgTimer);
+  if (text) {
+    msgTimer = setTimeout(() => { el.style.opacity = 0; }, 2500);
+  }
+}
+
+// ─── Movement & combat ───────────────────────────────────────────────────────
+function tryMove(dx, dy) {
+  if (!state.alive) return;
+  const p = state.player;
+  const nx = p.x + dx, ny = p.y + dy;
+  if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) return;
+  if (state.map[ny][nx] === T.WALL) return;
+
+  // Attack enemy on target cell
+  const ei = state.enemies.findIndex(e => e.x === nx && e.y === ny);
+  if (ei !== -1) {
+    const e = state.enemies[ei];
+    e.hp -= p.atk;
+    if (e.hp <= 0) {
+      p.xp += e.xp;
+      state.enemies.splice(ei, 1);
+      showMsg(`${e.name} slain! +${e.xp} XP`);
+      checkLevelUp();
+    } else {
+      showMsg(`Hit ${e.name} for ${p.atk}. (${e.hp}/${e.maxHp})`);
+    }
+    enemyTurns();
+    updateUI();
+    computeVision(state.fow, state.map, p.x, p.y);
+    render();
+    return;
+  }
+
+  // Move
+  p.x = nx; p.y = ny;
+
+  // Pick up gold
+  const gi = state.gold.findIndex(g => g.x === nx && g.y === ny);
+  if (gi !== -1) {
+    p.gold += state.gold[gi].val;
+    showMsg(`+${state.gold[gi].val} gold!`);
+    state.gold.splice(gi, 1);
+  }
+
+  // Stairs?
+  if (state.map[ny][nx] === T.STAIRS) {
+    document.getElementById('stairs-btn').style.display = 'block';
+    showMsg('Stairs! Tap ▼ to descend.');
+  } else {
+    document.getElementById('stairs-btn').style.display = 'none';
+  }
+
+  enemyTurns();
+  updateUI();
+  computeVision(state.fow, state.map, p.x, p.y);
+  render();
+}
+
+function checkLevelUp() {
+  const p = state.player;
+  const threshold = p.level * 10;
+  if (p.xp >= threshold) {
+    p.level++;
+    p.atk++;
+    p.maxHp += 5;
+    p.hp = Math.min(p.maxHp, p.hp + 5);
+    showMsg(`Level up! Lv${p.level} — ATK ${p.atk}, HP +5`);
+  }
+}
+
+function enemyTurns() {
+  const p = state.player;
+  for (const e of state.enemies) {
+    if (state.fow[e.y][e.x] !== 2) continue; // only act if visible
+    const dx = p.x - e.x, dy = p.y - e.y;
+    const dist = Math.abs(dx) + Math.abs(dy);
+    if (dist === 1) {
+      // Attack player
+      p.hp -= e.atk;
+      if (p.hp <= 0) {
+        p.hp = 0;
+        state.alive = false;
+        showDeath();
+        return;
+      }
+    } else if (dist <= 8) {
+      // Move toward player (simple step)
+      const mx = Math.sign(dx), my = Math.sign(dy);
+      const opts = [];
+      if (mx !== 0) opts.push([mx, 0]);
+      if (my !== 0) opts.push([0, my]);
+      if (mx !== 0 && my !== 0) opts.push([mx, my]);
+      for (const [ox, oy] of opts) {
+        const ex = e.x + ox, ey = e.y + oy;
+        if (ex < 0 || ey < 0 || ex >= MAP_W || ey >= MAP_H) continue;
+        if (state.map[ey][ex] === T.WALL) continue;
+        if (state.enemies.some(o => o !== e && o.x === ex && o.y === ey)) continue;
+        if (ex === p.x && ey === p.y) continue;
+        e.x = ex; e.y = ey;
+        break;
+      }
+    }
+  }
+}
+
+function showDeath() {
+  const overlay = document.getElementById('overlay');
+  overlay.innerHTML = `
+    <h1>YOU DIED</h1>
+    <p>Floor ${state.floor} &bull; Gold ${state.player.gold} &bull; Level ${state.player.level}</p>
+    <button id="start-btn">TRY AGAIN</button>
+  `;
+  overlay.style.display = 'flex';
+  document.getElementById('start-btn').addEventListener('click', () => {
+    overlay.style.display = 'none';
+    newGame();
+  }, { once: true });
+}
+
+// ─── Rendering ───────────────────────────────────────────────────────────────
+const COLORS = {
+  wall: '#1a1a2e',
+  wallLit: '#2e2e4a',
+  floor: '#16213e',
+  floorLit: '#0f3460',
+  stairs: '#f39c12',
+  seen: 0.35,
+};
+
+function render() {
+  if (!state.map) return;
+  const p = state.player;
+  const cw = canvas.width, ch = canvas.height;
+  ctx.fillStyle = '#050508';
+  ctx.fillRect(0, 0, cw, ch);
+
+  // Camera: center on player
+  const camX = p.x * TILE - cw / 2 + TILE / 2;
+  const camY = p.y * TILE - ch / 2 + TILE / 2;
+
+  const startTX = Math.max(0, Math.floor(camX / TILE));
+  const startTY = Math.max(0, Math.floor(camY / TILE));
+  const endTX = Math.min(MAP_W - 1, Math.ceil((camX + cw) / TILE));
+  const endTY = Math.min(MAP_H - 1, Math.ceil((camY + ch) / TILE));
+
+  ctx.save();
+  ctx.translate(-camX, -camY);
+
+  // Draw tiles
+  for (let ty = startTY; ty <= endTY; ty++) {
+    for (let tx = startTX; tx <= endTX; tx++) {
+      const vis = state.fow[ty][tx];
+      if (vis === 0) continue;
+      const tile = state.map[ty][tx];
+      const px = tx * TILE, py = ty * TILE;
+      const lit = vis === 2;
+
+      if (tile === T.WALL) {
+        ctx.fillStyle = lit ? COLORS.wallLit : COLORS.wall;
+      } else {
+        ctx.fillStyle = lit ? COLORS.floorLit : COLORS.floor;
+      }
+      ctx.fillRect(px, py, TILE, TILE);
+
+      if (tile === T.STAIRS && lit) {
+        ctx.fillStyle = COLORS.stairs;
+        ctx.font = `${TILE * 0.7}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('>', px + TILE / 2, py + TILE / 2);
+      }
+
+      if (!lit) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(px, py, TILE, TILE);
+      }
+    }
+  }
+
+  // Draw gold
+  for (const g of state.gold) {
+    if (state.fow[g.y][g.x] !== 2) continue;
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = `${TILE * 0.5}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('$', g.x * TILE + TILE / 2, g.y * TILE + TILE / 2);
+  }
+
+  // Draw enemies
+  for (const e of state.enemies) {
+    if (state.fow[e.y][e.x] !== 2) continue;
+    // HP bar
+    const bx = e.x * TILE + 2, by = e.y * TILE + 2;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(bx, by, TILE - 4, 4);
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(bx, by, (TILE - 4) * (e.hp / e.maxHp), 4);
+    // Glyph
+    ctx.fillStyle = e.color;
+    ctx.font = `bold ${TILE * 0.65}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(e.glyph, e.x * TILE + TILE / 2, e.y * TILE + TILE / 2 + 3);
+  }
+
+  // Draw player
+  ctx.fillStyle = '#3498db';
+  ctx.beginPath();
+  ctx.arc(p.x * TILE + TILE / 2, p.y * TILE + TILE / 2, TILE * 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ecf0f1';
+  ctx.font = `bold ${TILE * 0.5}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('@', p.x * TILE + TILE / 2, p.y * TILE + TILE / 2);
+
+  ctx.restore();
+}
+
+// ─── Tap controls ────────────────────────────────────────────────────────────
+// Tap-to-move: convert tap position to dungeon tile, move one step toward it per tap.
+function tapToDir(clientX, clientY) {
+  const p = state.player;
+  const cw = canvas.width, ch = canvas.height;
+  // Relative to canvas center (player position)
+  const dx = clientX - cw / 2;
+  const dy = clientY - ch / 2;
+  if (Math.abs(dx) < TILE / 3 && Math.abs(dy) < TILE / 3) return [0, 0];
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return [dx > 0 ? 1 : -1, 0];
+  } else {
+    return [0, dy > 0 ? 1 : -1];
+  }
+}
+
+let touchStartX = 0, touchStartY = 0;
+let touchStartTime = 0;
+const SWIPE_MIN = 20;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+  touchStartTime = Date.now();
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (!state.alive) return;
+  const dt = Date.now() - touchStartTime;
+  const ex = e.changedTouches[0].clientX;
+  const ey = e.changedTouches[0].clientY;
+  const swipeDX = ex - touchStartX;
+  const swipeDY = ey - touchStartY;
+
+  if (dt < 400 && (Math.abs(swipeDX) > SWIPE_MIN || Math.abs(swipeDY) > SWIPE_MIN)) {
+    // Swipe
+    if (Math.abs(swipeDX) > Math.abs(swipeDY)) {
+      tryMove(swipeDX > 0 ? 1 : -1, 0);
+    } else {
+      tryMove(0, swipeDY > 0 ? 1 : -1);
+    }
+  } else {
+    // Tap
+    const [dx, dy] = tapToDir(ex, ey);
+    tryMove(dx, dy);
+  }
+}, { passive: false });
+
+// Mouse fallback for desktop testing
+let mouseDown = false;
+canvas.addEventListener('mousedown', e => { mouseDown = true; touchStartX = e.clientX; touchStartY = e.clientY; touchStartTime = Date.now(); });
+canvas.addEventListener('mouseup', e => {
+  if (!mouseDown) return;
+  mouseDown = false;
+  if (!state.alive) return;
+  const dt = Date.now() - touchStartTime;
+  const swipeDX = e.clientX - touchStartX;
+  const swipeDY = e.clientY - touchStartY;
+  if (dt < 400 && (Math.abs(swipeDX) > SWIPE_MIN || Math.abs(swipeDY) > SWIPE_MIN)) {
+    if (Math.abs(swipeDX) > Math.abs(swipeDY)) tryMove(swipeDX > 0 ? 1 : -1, 0);
+    else tryMove(0, swipeDY > 0 ? 1 : -1);
+  } else {
+    const [dx, dy] = tapToDir(e.clientX, e.clientY);
+    tryMove(dx, dy);
+  }
+});
+
+// Keyboard bonus
+document.addEventListener('keydown', e => {
+  if (!state.alive) return;
+  const map = { ArrowUp: [0,-1], ArrowDown: [0,1], ArrowLeft: [-1,0], ArrowRight: [1,0],
+    w: [0,-1], s: [0,1], a: [-1,0], d: [1,0],
+    k: [0,-1], j: [0,1], h: [-1,0], l: [1,0] };
+  const dir = map[e.key];
+  if (dir) { e.preventDefault(); tryMove(...dir); }
+});
+
+// ─── Start button ─────────────────────────────────────────────────────────────
+document.getElementById('start-btn').addEventListener('click', () => {
+  document.getElementById('overlay').style.display = 'none';
+  newGame();
+}, { once: true });
+
+document.getElementById('stairs-btn').addEventListener('click', () => {
+  nextFloor();
+});
+</script>
+</body>
+</html>
