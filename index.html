@@ -212,7 +212,7 @@ canvas { display:block; }
   </div>
   <div id="stats">
     <div><span style="color:#888">Fl </span><b id="floor-num">1</b>  <span style="color:#888">Lv </span><b id="level-num">1</b></div>
-    <div><span style="color:#888">ATK </span><b id="atk-num">3</b></div>
+    <div><span style="color:#888">ATK </span><b id="atk-num">3</b>  <b id="diff-label" style="font-size:10px"></b></div>
   </div>
   <div id="gems-btn" id="gems-btn">
     <span>💎</span><b id="gems-num">0</b>
@@ -250,18 +250,8 @@ canvas { display:block; }
   </div>
 </div>
 
-<!-- Start / death overlay -->
-<div id="start-overlay" class="overlay-base">
-  <h1>TAP DUNGEON</h1>
-  <p>
-    Tap / D-pad to move &amp; attack.<br>
-    <b style="color:#cc88ff">✦</b> center button = <b>Magic Blast</b> (costs MP).<br>
-    Collect <b style="color:#20e8b0">💎 skill gems</b> to unlock upgrades.<br>
-    <b style="color:#e74c3c">🔴</b> potions heal · <b style="color:#3498db">🔵</b> restore MP.<br>
-    Pinch to zoom · find stairs to go deeper.
-  </p>
-  <button class="big-btn" id="start-btn">ENTER DUNGEON</button>
-</div>
+<!-- Start / death overlay (content built by JS) -->
+<div id="start-overlay" class="overlay-base"></div>
 
 <!-- Skill shop overlay -->
 <div id="skill-shop" class="overlay-base">
@@ -287,6 +277,43 @@ const MAGIC_COST = 5;
 const BASE_VISION = 7;
 const BASE_DETECT = 8;
 
+// ── Difficulty presets ────────────────────────────────────────
+const DIFFICULTIES = {
+  easy: {
+    key:'easy', label:'Easy', color:'#27ae60',
+    desc:'More HP, weaker enemies, plentiful gems & potions.',
+    baseVision:9, baseDetect:5,
+    playerHp:30, playerMp:20, playerAtk:4,
+    enemyHpMult:0.6, enemyAtkMult:0.55,
+    enemyCount: fl => Math.min(1 + fl,       10),
+    gemCount:   fl => 4 + fl * 2,
+    potionBonus:0.22,   // added to enemy dropRate
+    xpMult:1.0,
+  },
+  balanced: {
+    key:'balanced', label:'Balanced', color:'#3498db',
+    desc:'Fair challenge. Intended experience.',
+    baseVision:7, baseDetect:8,
+    playerHp:20, playerMp:15, playerAtk:3,
+    enemyHpMult:1.0, enemyAtkMult:1.0,
+    enemyCount: fl => Math.min(2 + fl * 2,   14),
+    gemCount:   fl => 3 + fl,
+    potionBonus:0,
+    xpMult:1.0,
+  },
+  unlikely: {
+    key:'unlikely', label:'Unlikely', color:'#e74c3c',
+    desc:'Brutal. Scarce resources, relentless enemies.',
+    baseVision:6, baseDetect:11,
+    playerHp:12, playerMp:10, playerAtk:2,
+    enemyHpMult:1.7, enemyAtkMult:1.6,
+    enemyCount: fl => Math.min(4 + fl * 3,   22),
+    gemCount:   fl => Math.max(1, 1 + Math.floor(fl * 0.6)),
+    potionBonus:-0.12,
+    xpMult:1.6,
+  },
+};
+
 // ═══════════════════════════════════════════════════════════════
 // SKILL DEFINITIONS
 // ═══════════════════════════════════════════════════════════════
@@ -304,16 +331,16 @@ const SKILL_DEFS = [
     name: 'Shadow Walk',
     icon: '🌑',
     maxLevel: 2, cost: 3,
-    effectLine: lv => `enemies detect you at ${BASE_DETECT - lv * 2} tiles`,
-    nextLine:   lv => `next: detect at ${BASE_DETECT - (lv + 1) * 2} tiles`,
+    effectLine: lv => `enemies detect you at ${(state.diff?.baseDetect??BASE_DETECT) - lv*2} tiles`,
+    nextLine:   lv => `next: detect at ${(state.diff?.baseDetect??BASE_DETECT) - (lv+1)*2} tiles`,
   },
   {
     id: 'eagleEye',
     name: 'Eagle Eye',
     icon: '👁️',
     maxLevel: 3, cost: 2,
-    effectLine: lv => `sight radius ${BASE_VISION + lv * 2}`,
-    nextLine:   lv => `next: sight ${BASE_VISION + (lv + 1) * 2}`,
+    effectLine: lv => `sight radius ${(state.diff?.baseVision??BASE_VISION) + lv*2}`,
+    nextLine:   lv => `next: sight ${(state.diff?.baseVision??BASE_VISION) + (lv+1)*2}`,
   },
   {
     id: 'arcaneBlast',
@@ -336,11 +363,12 @@ const SKILL_DEFS = [
 // ═══════════════════════════════════════════════════════════════
 // SKILL HELPERS  (read from state.skills)
 // ═══════════════════════════════════════════════════════════════
-function visionRadius() { return BASE_VISION + state.skills.eagleEye * 2; }
-function detectRange()  { return BASE_DETECT - state.skills.shadowWalk * 2; }
+function visionRadius() { return (state.diff?.baseVision ?? BASE_VISION) + state.skills.eagleEye * 2; }
+function detectRange()  { return (state.diff?.baseDetect ?? BASE_DETECT) - state.skills.shadowWalk * 2; }
 function mitigation()   { return state.skills.ironSkin * 0.2; }
-function maxMp()        { return 15 + state.skills.manaWell * 10; }
+function maxMp()        { return (state.diff?.playerMp ?? 15) + state.skills.manaWell * 10; }
 function aoERange()     { return 1 + state.skills.arcaneBlast; }
+function xpThreshold(level) { return level * 10 * (state.diff?.xpMult ?? 1); }
 
 // ═══════════════════════════════════════════════════════════════
 // STATE
@@ -669,16 +697,19 @@ const ENEMY_TYPES = [
 ];
 
 function spawnEnemies(rooms, floor) {
+  const diff = state.diff;
   const enemies = [];
-  const count = 2 + floor * 2;
+  const count = diff.enemyCount(floor);
   const pool = ENEMY_TYPES.slice(0, Math.min(1+Math.floor(floor/2), ENEMY_TYPES.length));
   for (let i=0;i<count;i++) {
     const room=rooms[1+Math.floor(Math.random()*(rooms.length-1))];
     const type=pool[Math.floor(Math.random()*pool.length)];
+    const scaledHp  = Math.max(1, Math.round(type.hp  * diff.enemyHpMult));
+    const scaledAtk = Math.max(1, Math.round(type.atk * diff.enemyAtkMult));
     enemies.push({...type,
       x:room.x+1+Math.floor(Math.random()*(room.w-2)),
       y:room.y+1+Math.floor(Math.random()*(room.h-2)),
-      maxHp:type.hp, hp:type.hp,
+      hp:scaledHp, maxHp:scaledHp, atk:scaledAtk,
     });
   }
   return enemies;
@@ -686,7 +717,8 @@ function spawnEnemies(rooms, floor) {
 
 function spawnGems(rooms, floor) {
   const gems = [];
-  for (let i=0;i<3+floor;i++) {
+  const count = state.diff.gemCount(floor);
+  for (let i=0;i<count;i++) {
     const room=rooms[Math.floor(Math.random()*rooms.length)];
     gems.push({
       x:room.x+1+Math.floor(Math.random()*(room.w-2)),
@@ -698,7 +730,8 @@ function spawnGems(rooms, floor) {
 }
 
 function maybeDropPotion(enemy, x, y) {
-  if (Math.random() > enemy.dropRate) return;
+  const rate = Math.min(0.9, Math.max(0, enemy.dropRate + state.diff.potionBonus));
+  if (Math.random() > rate) return;
   const type = Math.random() < .6 ? 'red' : 'blue';
   state.potions.push({x, y, type});
 }
@@ -706,7 +739,8 @@ function maybeDropPotion(enemy, x, y) {
 // ═══════════════════════════════════════════════════════════════
 // GAME INIT
 // ═══════════════════════════════════════════════════════════════
-function newGame() {
+function newGame(diffKey) {
+  const diff = DIFFICULTIES[diffKey] ?? DIFFICULTIES.balanced;
   const {map,rooms} = makeMap();
   const start = rooms[0];
   zoom = 1.0;
@@ -714,11 +748,12 @@ function newGame() {
     map, rooms,
     fow: makeFow(),
     floor: 1,
+    diff,
     player: {
       x:start.cx, y:start.cy,
-      hp:20, maxHp:20,
-      mp:15, // maxMp derived from skills
-      atk:3,
+      hp:diff.playerHp, maxHp:diff.playerHp,
+      mp:diff.playerMp,
+      atk:diff.playerAtk,
       gems:0,
       potions:{red:0, blue:0},
       xp:0, level:1,
@@ -780,6 +815,8 @@ function updateUI() {
   document.getElementById('floor-num').textContent  = state.floor;
   document.getElementById('level-num').textContent  = p.level;
   document.getElementById('atk-num').textContent    = p.atk;
+  const dn = document.getElementById('diff-label');
+  if (dn) { dn.textContent = state.diff.label; dn.style.color = state.diff.color; }
   document.getElementById('gems-num').textContent   = p.gems;
   document.getElementById('pot-red-count').textContent  = '×'+p.potions.red;
   document.getElementById('pot-blue-count').textContent = '×'+p.potions.blue;
@@ -911,7 +948,7 @@ function tryMove(dx, dy) {
 
 function checkLevelUp() {
   const p = state.player;
-  if (p.xp >= p.level*10) {
+  if (p.xp >= xpThreshold(p.level)) {
     p.level++; p.atk++;
     p.maxHp+=5; p.hp=Math.min(p.maxHp,p.hp+5);
     showMsg(`Level up! Lv${p.level} — ATK ${p.atk}, HP +5`);
@@ -949,15 +986,25 @@ function enemyTurns() {
 }
 
 function showDeath() {
-  const ov=document.getElementById('start-overlay');
-  ov.innerHTML=`
-    <h1>YOU DIED</h1>
-    <p>Floor ${state.floor} &bull; Gems ${state.player.gems} &bull; Level ${state.player.level}</p>
-    <button class="big-btn" id="start-btn">TRY AGAIN</button>`;
-  ov.style.display='flex';
-  document.getElementById('start-btn').addEventListener('click',()=>{
-    ov.style.display='none'; newGame();
-  },{once:true});
+  const ov = document.getElementById('start-overlay');
+  const d   = state.diff;
+  ov.innerHTML = `
+    <h1 style="color:#e74c3c">YOU DIED</h1>
+    <p style="color:#888;text-align:center;line-height:1.8">
+      Floor&nbsp;${state.floor} &nbsp;·&nbsp; Gems&nbsp;${state.player.gems} &nbsp;·&nbsp; Lv&nbsp;${state.player.level}<br>
+      <span style="color:${d.color}">${d.label}</span> difficulty
+    </p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
+      <button class="big-btn" id="retry-btn" style="border-color:${d.color}">↺ Retry ${d.label}</button>
+      <button class="big-btn" id="rediff-btn" style="border-color:#555;color:#aaa;font-size:.85rem">☰ Change difficulty</button>
+    </div>`;
+  ov.style.display = 'flex';
+  document.getElementById('retry-btn').addEventListener('click', () => {
+    ov.style.display='none'; newGame(d.key);
+  }, {once:true});
+  document.getElementById('rediff-btn').addEventListener('click', () => {
+    buildStartScreen();
+  }, {once:true});
 }
 
 // Potion use
@@ -1251,13 +1298,39 @@ document.addEventListener('keydown',e=>{
 document.getElementById('stairs-btn').addEventListener('click',nextFloor);
 
 // ═══════════════════════════════════════════════════════════════
-// BOOT
+// START SCREEN  (also used after death → "change difficulty")
 // ═══════════════════════════════════════════════════════════════
-document.getElementById('start-btn').addEventListener('click',()=>{
-  document.getElementById('start-overlay').style.display='none';
-  buildSprites();
-  newGame();
-},{once:true});
+function buildStartScreen() {
+  const ov = document.getElementById('start-overlay');
+  ov.innerHTML = `
+    <h1>TAP DUNGEON</h1>
+    <p style="color:#888;font-size:.82rem;text-align:center;line-height:1.7;max-width:300px">
+      Tap / D-pad to move &amp; attack.<br>
+      <b style="color:#cc88ff">✦</b> = Magic Blast (costs MP) &nbsp;·&nbsp;
+      Pinch to zoom.<br>
+      Collect 💎 gems · use 🔴🔵 potions · find ⬇ stairs.
+    </p>
+    <p style="color:#aaa;font-size:.85rem;margin-bottom:4px">Choose difficulty:</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">
+      ${Object.values(DIFFICULTIES).map(d=>`
+        <button class="big-btn diff-pick" data-diff="${d.key}"
+          style="border-color:${d.color};font-size:.9rem;padding:12px 20px;flex-direction:column;display:flex;align-items:center;gap:4px">
+          <span style="color:${d.color};font-size:1.05rem">${d.label}</span>
+          <span style="font-size:.72rem;color:#888;font-weight:normal">${d.desc}</span>
+        </button>`).join('')}
+    </div>`;
+  ov.style.display = 'flex';
+  ov.querySelectorAll('.diff-pick').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ov.style.display = 'none';
+      buildSprites();
+      newGame(btn.dataset.diff);
+    }, {once:true});
+  });
+}
+
+// ── Boot ──────────────────────────────────────────────────────
+buildStartScreen();
 </script>
 </body>
 </html>
