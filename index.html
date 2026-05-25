@@ -287,8 +287,9 @@ const DIFFICULTIES = {
     enemyHpMult:0.6, enemyAtkMult:0.55,
     enemyCount: fl => Math.min(1 + fl,       10),
     gemCount:   fl => 4 + fl * 2,
-    potionBonus:0.22,   // added to enemy dropRate
+    potionBonus:0.22,
     xpMult:1.0,
+    floorScale:1.07,   // enemy HP & ATK ×1.07 per floor
   },
   balanced: {
     key:'balanced', label:'Balanced', color:'#3498db',
@@ -300,6 +301,7 @@ const DIFFICULTIES = {
     gemCount:   fl => 3 + fl,
     potionBonus:0,
     xpMult:1.0,
+    floorScale:1.12,   // enemy HP & ATK ×1.12 per floor
   },
   unlikely: {
     key:'unlikely', label:'Unlikely', color:'#e74c3c',
@@ -311,6 +313,7 @@ const DIFFICULTIES = {
     gemCount:   fl => Math.max(1, 1 + Math.floor(fl * 0.6)),
     potionBonus:-0.12,
     xpMult:1.6,
+    floorScale:1.18,   // enemy HP & ATK ×1.18 per floor
   },
 };
 
@@ -704,8 +707,9 @@ function spawnEnemies(rooms, floor) {
   for (let i=0;i<count;i++) {
     const room=rooms[1+Math.floor(Math.random()*(rooms.length-1))];
     const type=pool[Math.floor(Math.random()*pool.length)];
-    const scaledHp  = Math.max(1, Math.round(type.hp  * diff.enemyHpMult));
-    const scaledAtk = Math.max(1, Math.round(type.atk * diff.enemyAtkMult));
+    const exp = Math.pow(diff.floorScale, floor - 1);
+    const scaledHp  = Math.max(1, Math.round(type.hp  * diff.enemyHpMult  * exp));
+    const scaledAtk = Math.max(1, Math.round(type.atk * diff.enemyAtkMult * exp));
     enemies.push({...type,
       x:room.x+1+Math.floor(Math.random()*(room.w-2)),
       y:room.y+1+Math.floor(Math.random()*(room.h-2)),
